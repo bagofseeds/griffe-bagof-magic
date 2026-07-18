@@ -1,5 +1,6 @@
 # versioningit
 src/bagof/*/_version.py
+src/griffe_bagof_magic/_version.py
 
 # vscode
 .vscode
