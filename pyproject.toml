@@ -1,0 +1,100 @@
+[project]
+name = "griffe-bagof-magic"
+authors = [
+    {name = "Yael Balbastre", email = "yael.balbastre@gmail.com"},
+]
+maintainers = [
+    {name = "Yael Balbastre", email = "yael.balbastre@gmail.com"},
+]
+description = "Griffe extension for bagof-magic classes."
+readme = "README.md"
+license = {text = "MIT"}
+keywords = ["bagof", "magic", "griffe", "mkdocstrings", "documentation"]
+classifiers = [
+    "Development Status :: 1 - Planning",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3 :: Only",
+    "Typing :: Typed",
+]
+dynamic = ["version"]
+# This is a documentation-build tool: it runs wherever docs are generated,
+# which tracks griffe's own floor (>=3.10), not the 3.8 runtime floor of the
+# bagof packages it documents.
+requires-python = ">=3.10"
+dependencies = [
+    "griffe>=2.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/bagofseeds/griffe-bagof-magic"
+Documentation = "https://github.com/bagofseeds/griffe-bagof-magic#readme"
+Issues = "https://github.com/bagofseeds/griffe-bagof-magic/issues"
+Repository = "https://github.com/bagofseeds/griffe-bagof-magic"
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7",
+    "bagof-magic @ git+https://github.com/bagofseeds/bagof-magic.git",
+]
+
+[build-system]
+requires = [
+    "setuptools>=59.0",
+    "wheel>=0.45.1",
+    "versioningit>=1.0",
+]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["griffe_bagof_magic*"]
+
+[tool.versioningit]
+default-version = "0+unknown"
+
+[tool.versioningit.vcs]
+default-tag = "0.1"
+
+[tool.versioningit.format]
+distance = "{base_version}+{distance}.{vcs}{rev}"
+dirty = "{base_version}+{distance}.{vcs}{rev}.dirty"
+distance-dirty = "{base_version}+{distance}.{vcs}{rev}.dirty"
+
+[tool.versioningit.write]
+file = "src/griffe_bagof_magic/_version.py"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["griffe_bagof_magic"]
+omit = ["*/_version.py"]
+
+[tool.coverage.report]
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "# pragma: no cover",
+]
+
+[tool.ruff]
+line-length = 79
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["ANN", "B", "E", "F", "I", "UP", "W"]
+ignore = [
+    "ANN002",
+    "ANN003",
+    "ANN401",
+]
+
+[tool.codespell]
+check-filenames = true
+skip = ".git,*.egg-info,build,dist"
