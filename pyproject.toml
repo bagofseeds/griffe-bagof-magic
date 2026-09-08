@@ -11,12 +11,15 @@ readme = "README.md"
 license = {text = "MIT"}
 keywords = ["bagof", "magic", "griffe", "mkdocstrings", "documentation"]
 classifiers = [
-    "Development Status :: 1 - Planning",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
+    "Topic :: Documentation",
+    "Topic :: Software Development :: Documentation",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3 :: Only",
     "Typing :: Typed",
 ]
@@ -36,6 +39,13 @@ Issues = "https://github.com/bagofseeds/griffe-bagof-magic/issues"
 Repository = "https://github.com/bagofseeds/griffe-bagof-magic"
 
 [project.optional-dependencies]
+# The extension is richest when it can import the documented package (it
+# then reads the live converters for `like` hints and the full field
+# table). Installing this extra alongside your own package guarantees
+# that; without it, the extension falls back to static analysis.
+dynamic = [
+    "bagof-magic @ git+https://github.com/bagofseeds/bagof-magic.git",
+]
 test = [
     "pytest>=7",
     "bagof-magic @ git+https://github.com/bagofseeds/bagof-magic.git",

@@ -1,37 +1,66 @@
-"""Tests for the bagof-magic griffe extension."""
+"""Tests for the bagof-magic griffe extension.
 
+The dynamic path (the live class is importable) is what runs here and in
+CI, since the ``test`` extra installs ``bagof-magic``. The static
+fallback is exercised by forcing ``_bagof.AVAILABLE`` off.
+"""
+
+from __future__ import annotations
+
+import itertools
+import sys
 import tempfile
 from pathlib import Path
 
 import griffe
 import pytest
 
-from griffe_bagof_magic import MagicExtension
+from griffe_bagof_magic import MagicExtension, _bagof
 
-# bagof-magic must be importable for its canonical paths to resolve.
+# The live path needs bagof-magic importable; skip everything otherwise.
 pytest.importorskip("bagof.magic")
+
+_counter = itertools.count()
 
 
 def load(source: str) -> griffe.Module:
-    """Load a one-module package containing ``source`` with the extension."""
+    """Load a one-module package built from ``source``.
+
+    Each call gets a fresh module name, so the live path imports the
+    module under test and not one a previous test left in ``sys.modules``.
+    """
+    name = f"sample_{next(_counter)}"
     tmp = Path(tempfile.mkdtemp())
-    pkg = tmp / "sample"
+    pkg = tmp / name
     pkg.mkdir()
     (pkg / "__init__.py").write_text(source)
-    search = [str(tmp), "/workspaces/bagof-magic/src"]
+    search = [str(tmp)] + [p for p in sys.path if isinstance(p, str) and p]
     return griffe.load(
-        "sample",
+        name,
         search_paths=search,
         extensions=griffe.load_extensions(MagicExtension()),
     )
 
 
-def init_params(cls: griffe.Class) -> list:
-    """The parameter names of a synthesized ``__init__`` (excluding self)."""
+def params(cls: griffe.Class) -> list:
+    """``(name, str(annotation), str(default), kind)`` per init parameter."""
     init = cls.members.get("__init__")
     if init is None:
         return None
-    return [p.name for p in init.parameters if p.name != "self"]
+    return [
+        (
+            p.name,
+            None if p.annotation is None else str(p.annotation),
+            None if p.default is None else str(p.default),
+            p.kind.value,
+        )
+        for p in init.parameters
+    ]
+
+
+def names(cls: griffe.Class) -> list:
+    got = params(cls)
+    return None if got is None else [name for name, *_ in got]
 
 
 # ----------------------------------------------------------------------
@@ -47,7 +76,7 @@ def test_inheritance_is_detected() -> None:
         "    y: float\n"
     )
     assert "magic" in mod["Point"].labels
-    assert init_params(mod["Point"]) == ["x", "y"]
+    assert names(mod["Point"]) == ["x", "y"]
 
 
 def test_decorator_is_detected() -> None:
@@ -58,7 +87,7 @@ def test_decorator_is_detected() -> None:
         "    x: float\n"
     )
     assert "magic" in mod["Point"].labels
-    assert init_params(mod["Point"]) == ["x"]
+    assert names(mod["Point"]) == ["x"]
 
 
 def test_subclass_inherits_fields() -> None:
@@ -69,20 +98,16 @@ def test_subclass_inherits_fields() -> None:
         "class Kid(Base):\n"
         "    y: int\n"
     )
-    assert "magic" in mod["Kid"].labels
-    assert init_params(mod["Kid"]) == ["x", "y"]
+    assert names(mod["Kid"]) == ["x", "y"]
 
 
 def test_non_magic_class_is_untouched() -> None:
-    mod = load(
-        "class Plain:\n"
-        "    x: int\n"
-    )
+    mod = load("class Plain:\n    x: int\n")
     assert "magic" not in mod["Plain"].labels
-    assert init_params(mod["Plain"]) is None
+    assert names(mod["Plain"]) is None
 
 
-def test_existing_init_is_not_overwritten() -> None:
+def test_hand_written_init_is_left_alone() -> None:
     mod = load(
         "from bagof.magic import Magic\n"
         "class Custom(Magic):\n"
@@ -90,133 +115,280 @@ def test_existing_init_is_not_overwritten() -> None:
         "    def __init__(self, x, extra=1):\n"
         "        ...\n"
     )
-    assert init_params(mod["Custom"]) == ["x", "extra"]
+    # Read verbatim from the source, receiver and all -- left untouched.
+    assert names(mod["Custom"]) == ["self", "x", "extra"]
+    assert "generated" not in mod["Custom"]["__init__"].labels
 
 
-# ----------------------------------------------------------------------
-# Class-level options
-# ----------------------------------------------------------------------
-
-
-def test_kw_only_inheritance_keyword() -> None:
+def test_fieldless_magic_is_untouched() -> None:
     mod = load(
         "from bagof.magic import Magic\n"
-        "class P(Magic, kw_only=True):\n"
-        "    x: int\n"
+        'class Empty(Magic):\n    """Nothing."""\n'
     )
-    kinds = [p.kind.value for p in mod["P"]["__init__"].parameters
-             if p.name != "self"]
-    assert kinds == ["keyword-only"]
+    assert names(mod["Empty"]) is None
+    assert "**Fields**" not in mod["Empty"].docstring.value
 
 
-def test_kw_only_decorator_argument() -> None:
-    mod = load(
-        "from bagof.magic import magic\n"
-        "@magic(kw_only=True)\n"
-        "class P:\n"
-        "    x: int\n"
-    )
-    kinds = [p.kind.value for p in mod["P"]["__init__"].parameters
-             if p.name != "self"]
-    assert kinds == ["keyword-only"]
+# ----------------------------------------------------------------------
+# The like / type split
+# ----------------------------------------------------------------------
 
 
-def test_init_false_suppresses_init() -> None:
+def test_parameter_uses_like_attribute_uses_declared() -> None:
     mod = load(
         "from bagof.magic import Magic\n"
-        "class P(Magic, init=False):\n"
-        "    x: int\n"
+        "class C(Magic, convert=True):\n"
+        "    s: str\n"
     )
-    assert init_params(mod["P"]) is None
+    # A converting str field accepts more than it stores.
+    (name, annotation, _, _), = params(mod["C"])
+    assert name == "s"
+    assert annotation == "str | bytes"
+    assert str(mod["C"].members["s"].annotation) == "str"
+
+
+def test_like_for_datetime() -> None:
+    mod = load(
+        "import datetime\n"
+        "from bagof.magic import Magic\n"
+        "class C(Magic, convert=True):\n"
+        "    when: datetime.datetime\n"
+    )
+    annotation = params(mod["C"])[0][1]
+    assert annotation.startswith("datetime")
+    for part in ("str", "int", "float"):
+        assert part in annotation
+    assert str(mod["C"].members["when"].annotation) == "datetime.datetime"
+
+
+def test_optional_is_preserved_on_the_attribute() -> None:
+    mod = load(
+        "import typing_extensions as tx\n"
+        "from bagof.magic import Magic\n"
+        "class C(Magic):\n"
+        "    note: tx.Optional[str] = None\n"
+    )
+    assert str(mod["C"].members["note"].annotation) == "str | None"
+
+
+def test_non_converting_field_keeps_declared_on_parameter() -> None:
+    mod = load(
+        "from bagof.magic import Magic\n"
+        "class C(Magic):\n"
+        "    n: int\n"
+    )
+    assert params(mod["C"])[0][1] == "int"
 
 
 # ----------------------------------------------------------------------
-# Per-field markers
+# Defaults
 # ----------------------------------------------------------------------
 
 
-def test_class_var_is_excluded() -> None:
+def test_defaults_value_factory_and_required() -> None:
+    mod = load(
+        "from bagof.magic import Magic, Factory\n"
+        "class C(Magic):\n"
+        "    required: int\n"
+        "    value: int = 5\n"
+        "    made: Factory[list]\n"
+    )
+    by_name = {name: default for name, _, default, _ in params(mod["C"])}
+    assert by_name["required"] is None          # no default
+    assert by_name["value"] == "5"
+    assert by_name["made"] == "<factory>"
+
+
+# ----------------------------------------------------------------------
+# Field kinds and pseudo-fields
+# ----------------------------------------------------------------------
+
+
+def test_keyword_only_is_ordered_last() -> None:
+    mod = load(
+        "from bagof.magic import Magic, KwOnly\n"
+        "class C(Magic):\n"
+        "    a: int\n"
+        "    b: KwOnly[int] = 0\n"
+    )
+    got = params(mod["C"])
+    assert got[0][0] == "a" and got[0][3] == "positional or keyword"
+    assert got[1][0] == "b" and got[1][3] == "keyword-only"
+
+
+def test_class_var_excluded_but_kept_as_attribute() -> None:
     mod = load(
         "from bagof.magic import Magic, ClassVar\n"
-        "class P(Magic):\n"
+        "class C(Magic):\n"
         "    x: int\n"
         "    kind: ClassVar[str] = 'k'\n"
     )
-    assert init_params(mod["P"]) == ["x"]
+    assert names(mod["C"]) == ["x"]
+    assert str(mod["C"].members["kind"].annotation) == "str"
 
 
-def test_no_init_marker_is_excluded() -> None:
+def test_init_var_is_a_parameter_and_not_an_attribute() -> None:
     mod = load(
-        "from bagof.magic import Magic, NoInit\n"
-        "class P(Magic):\n"
+        "from bagof.magic import Magic, Var\n"
+        "class C(Magic):\n"
         "    x: int\n"
-        "    y: NoInit[int] = 3\n"
+        "    scratch: Var[int] = 0\n"
     )
-    assert init_params(mod["P"]) == ["x"]
+    assert names(mod["C"]) == ["x", "scratch"]
+    # An init-only field is never stored, so it has no attribute.
+    assert "scratch" not in mod["C"].members
 
 
-def test_kw_only_marker_on_field() -> None:
-    mod = load(
-        "from bagof.magic import Magic, KwOnly\n"
-        "class P(Magic):\n"
-        "    x: int\n"
-        "    y: KwOnly[int]\n"
-    )
-    params = {p.name: p.kind.value for p in mod["P"]["__init__"].parameters}
-    assert params["x"] == "positional or keyword"
-    assert params["y"] == "keyword-only"
-
-
-def test_kw_only_field_unwraps_to_inner_type() -> None:
-    mod = load(
-        "from bagof.magic import Magic, KwOnly\n"
-        "class P(Magic):\n"
-        "    y: KwOnly[int]\n"
-    )
-    y = next(p for p in mod["P"]["__init__"].parameters if p.name == "y")
-    assert str(y.annotation) == "int"
-
-
-def test_default_value_is_preserved() -> None:
+def test_init_false_suppresses_the_constructor() -> None:
     mod = load(
         "from bagof.magic import Magic\n"
-        "class P(Magic):\n"
-        "    a: int\n"
-        "    b: int = 5\n"
+        "class C(Magic, init=False):\n"
+        "    x: int\n"
     )
-    b = next(p for p in mod["P"]["__init__"].parameters if p.name == "b")
-    assert str(b.default) == "5"
+    assert "__init__" not in mod["C"].members
+
+
+def test_a_field_named_self_does_not_leak_the_receiver() -> None:
+    mod = load(
+        "from bagof.magic import Magic\n"
+        "class C(Magic):\n"
+        "    self: int\n"
+        "    other: int = 0\n"
+    )
+    assert names(mod["C"]) == ["self", "other"]
+    got = {p.name for p in mod["C"]["__init__"].parameters}
+    assert "__magic_self__" not in got
+
+
+def test_alias_names_the_parameter_and_the_attribute() -> None:
+    mod = load(
+        "import typing_extensions as tx\n"
+        "from bagof.magic import Magic, Field\n"
+        "class C(Magic):\n"
+        "    name: tx.Annotated[str, Field(alias='title')]\n"
+    )
+    assert names(mod["C"]) == ["title"]        # the parameter is the alias
+    assert "name" in mod["C"].members          # the attribute is the field
 
 
 # ----------------------------------------------------------------------
-# Robustness
+# The field table and generated methods
 # ----------------------------------------------------------------------
 
 
-def test_loads_the_real_bagof_magic_package() -> None:
+def test_field_table_is_appended() -> None:
+    mod = load(
+        "from bagof.magic import Magic\n"
+        'class C(Magic):\n    """A thing."""\n    x: int\n    y: int = 0\n'
+    )
+    doc = mod["C"].docstring.value
+    assert "A thing." in doc
+    assert "| Field | Type | Default |" in doc
+    assert "| `x` | `int` | *required* |" in doc
+    assert "| `y` | `int` | `0` |" in doc
+
+
+def test_field_table_escapes_a_union_pipe() -> None:
+    mod = load(
+        "import typing_extensions as tx\n"
+        "from bagof.magic import Magic\n"
+        'class C(Magic):\n    """T."""\n    note: tx.Optional[str] = None\n'
+    )
+    assert r"`str \| None`" in mod["C"].docstring.value
+
+
+def test_generated_methods_are_labelled() -> None:
+    mod = load(
+        "from bagof.magic import Magic\n"
+        "class C(Magic):\n    x: int\n"
+    )
+    for name in ("__eq__", "__repr__"):
+        assert "generated" in mod["C"].members[name].labels
+
+
+def test_hand_written_method_is_not_labelled() -> None:
+    mod = load(
+        "from bagof.magic import Magic\n"
+        "class C(Magic):\n"
+        "    x: int\n"
+        "    def __repr__(self):\n"
+        '        """Mine."""\n'
+        "        return 'c'\n"
+    )
+    written = mod["C"].members["__repr__"]
+    assert "generated" not in written.labels
+    assert written.docstring.value == "Mine."
+
+
+def test_mapping_methods_are_labelled() -> None:
+    mod = load(
+        "from bagof.magic import Magic\n"
+        "class C(Magic, mapping=True):\n    x: int\n"
+    )
+    for name in ("__getitem__", "__iter__", "__len__"):
+        assert "generated" in mod["C"].members[name].labels
+
+
+def test_the_real_magic_base_is_left_alone() -> None:
     mod = griffe.load(
         "bagof.magic",
-        search_paths=["/workspaces/bagof-magic/src"],
+        search_paths=[p for p in sys.path if isinstance(p, str) and p],
         extensions=griffe.load_extensions(MagicExtension()),
     )
-    # The base class has no fields, so it must not gain a spurious __init__.
     assert "__init__" not in mod["Magic"].members
-    # Field is a slots class, not a Magic, and must be left alone.
     assert "magic" not in mod["Field"].labels
 
 
-def test_default_marker_extracts_type_and_value() -> None:
+# ----------------------------------------------------------------------
+# The static fallback (forced by turning the live path off)
+# ----------------------------------------------------------------------
+
+
+@pytest.fixture
+def static(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_bagof, "AVAILABLE", False)
+
+
+def test_static_reconstructs_from_the_source(static: None) -> None:
+    mod = load(
+        "from bagof.magic import Magic\n"
+        "class Point(Magic):\n    x: float\n    y: float\n"
+    )
+    assert "magic" in mod["Point"].labels
+    assert names(mod["Point"]) == ["x", "y"]
+
+
+def test_static_keyword_only(static: None) -> None:
+    mod = load(
+        "from bagof.magic import Magic\n"
+        "class P(Magic, kw_only=True):\n    x: int\n"
+    )
+    assert params(mod["P"])[0][3] == "keyword-only"
+
+
+def test_static_excludes_class_var_keeps_init_var(static: None) -> None:
+    mod = load(
+        "from bagof.magic import Magic, ClassVar, Var\n"
+        "class P(Magic):\n"
+        "    x: int\n"
+        "    kind: ClassVar[str] = 'k'\n"
+        "    scratch: Var[int] = 0\n"
+    )
+    # ClassVar is not a parameter; an init-only Var is.
+    assert names(mod["P"]) == ["x", "scratch"]
+
+
+def test_static_default_marker(static: None) -> None:
     mod = load(
         "from bagof.magic import Magic, Default\n"
-        "class P(Magic):\n"
-        "    a: Default[int, 5]\n"
+        "class P(Magic):\n    a: Default[int, 5]\n"
     )
     a = next(p for p in mod["P"]["__init__"].parameters if p.name == "a")
     assert str(a.annotation) == "int"
     assert str(a.default) == "5"
 
 
-def test_annotated_marker_form() -> None:
+def test_static_annotated_marker(static: None) -> None:
     mod = load(
         "import typing_extensions as tx\n"
         "from bagof.magic import Magic, KwOnly\n"
@@ -227,24 +399,3 @@ def test_annotated_marker_form() -> None:
     y = next(p for p in mod["P"]["__init__"].parameters if p.name == "y")
     assert str(y.annotation) == "int"
     assert y.kind.value == "keyword-only"
-
-
-def test_annotated_no_init_is_excluded() -> None:
-    mod = load(
-        "import typing_extensions as tx\n"
-        "from bagof.magic import Magic, NoInit\n"
-        "class P(Magic):\n"
-        "    x: int\n"
-        "    y: tx.Annotated[int, NoInit()]\n"
-    )
-    assert init_params(mod["P"]) == ["x"]
-
-
-def test_var_marker_is_excluded() -> None:
-    mod = load(
-        "from bagof.magic import Magic, Var\n"
-        "class P(Magic):\n"
-        "    x: int\n"
-        "    y: Var[int]\n"
-    )
-    assert init_params(mod["P"]) == ["x"]
