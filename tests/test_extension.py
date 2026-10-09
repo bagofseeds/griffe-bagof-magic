@@ -454,3 +454,100 @@ def test_static_alias_false_preserves_underscores(static: None) -> None:
         "class C(Magic, alias=False):\n    _header: str\n"
     )
     assert names(mod["C"]) == ["_header"]
+
+
+@pytest.mark.parametrize("hint", [
+    "ClassVar[str]",
+    "Annotated[ClassVar[str], 'metadata']",
+    "Annotated[str, MagicClassVar()]",
+    "Annotated[str, Field(init=False)]",
+    "Annotated[str, Field(var=True, init=False)]",
+])
+@pytest.mark.parametrize("fallback", [False, True])
+def test_excluded_fields_match_runtime(
+    monkeypatch: pytest.MonkeyPatch, hint: str, fallback: bool,
+) -> None:
+    if fallback:
+        monkeypatch.setattr(_bagof, "AVAILABLE", False)
+    mod = load(
+        "from typing import Annotated, ClassVar\n"
+        "from bagof.magic import Magic, Field, ClassVar as MagicClassVar\n"
+        "class C(Magic):\n"
+        f"    kind: {hint} = 'thing'\n"
+        "    x: int\n"
+    )
+    assert names(mod["C"]) == ["x"]
+    if "ClassVar" in hint or "var=True" in hint:
+        assert "instance-attribute" not in mod["C"]["kind"].labels
+        assert "class-attribute" in mod["C"]["kind"].labels
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+def test_subclass_classvar_removes_inherited_parameter(
+    monkeypatch: pytest.MonkeyPatch, fallback: bool,
+) -> None:
+    if fallback:
+        monkeypatch.setattr(_bagof, "AVAILABLE", False)
+    mod = load(
+        "from typing import ClassVar\n"
+        "from bagof.magic import Magic\n"
+        "class Base(Magic):\n    kind: str\n    x: int\n"
+        "class Middle(Base):\n    y: int\n"
+        "class Child(Middle):\n    kind: ClassVar[str] = 'thing'\n"
+    )
+    assert names(mod["Child"]) == ["x", "y"]
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+@pytest.mark.parametrize("declaration", [
+    "Alias = ClassVar[str]",
+    "Alias: TypeAlias = ClassVar[str]",
+    "Hidden = ClassVar[str]\nAlias = Hidden",
+    "Alias = Annotated[str, MagicClassVar()]",
+])
+def test_classvar_inside_type_alias(
+    monkeypatch: pytest.MonkeyPatch, fallback: bool, declaration: str,
+) -> None:
+    if fallback:
+        monkeypatch.setattr(_bagof, "AVAILABLE", False)
+    mod = load(
+        "from typing import Annotated, ClassVar, TypeAlias\n"
+        "from bagof.magic import Magic, ClassVar as MagicClassVar\n"
+        f"{declaration}\n"
+        "class C(Magic):\n    kind: Alias = 'thing'\n    x: int\n"
+    )
+    assert names(mod["C"]) == ["x"]
+    assert "instance-attribute" not in mod["C"]["kind"].labels
+
+
+def test_static_recursive_alias_terminates(static: None) -> None:
+    mod = load(
+        "from bagof.magic import Magic\n"
+        "A = B\nB = A\n"
+        "class C(Magic):\n    x: A\n"
+    )
+    assert names(mod["C"]) == ["x"]
+
+
+def test_static_imported_classvar_alias(
+    static: None, tmp_path: Path,
+) -> None:
+    package = tmp_path / f"alias_sample_{next(_counter)}"
+    package.mkdir()
+    (package / "hints.py").write_text(
+        "from typing_extensions import ClassVar, Tuple\n"
+        "FieldNames = ClassVar[Tuple[str, ...]]\n"
+    )
+    (package / "__init__.py").write_text(
+        "from bagof.magic import Magic\n"
+        "from .hints import FieldNames\n"
+        "class C(Magic):\n"
+        "    data_fields: FieldNames = ()\n"
+        "    x: int\n"
+    )
+    mod = griffe.load(
+        package.name, search_paths=[tmp_path],
+        extensions=griffe.load_extensions(MagicExtension()),
+    )
+    assert names(mod["C"]) == ["x"]
+    assert "instance-attribute" not in mod["C"]["data_fields"].labels
