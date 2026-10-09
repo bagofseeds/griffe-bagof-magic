@@ -17,6 +17,7 @@ from typing import Any
 from griffe import (
     Attribute,
     Class,
+    Docstring,
     ExprCall,
     ExprSubscript,
     ExprTuple,
@@ -24,6 +25,7 @@ from griffe import (
     Parameter,
     ParameterKind,
     Parameters,
+    Parser,
 )
 
 _MAGIC_BASE = "bagof.magic.Magic"
@@ -178,7 +180,8 @@ def _parameters(class_: Class, kw_only_default: bool) -> list[Parameter]:
             kind = ParameterKind.positional_or_keyword
         parameters.append(
             Parameter(
-                member.name,
+                (member.name if _options(class_).get("alias") is False
+                 else member.name.lstrip("_")),
                 annotation=field.inner,
                 kind=kind,
                 default=field.default,
@@ -228,6 +231,18 @@ def document(class_: Class) -> bool:
         parent=class_,
         parameters=Parameters(*_reorder(parameters)),
         returns="None",
+    )
+    lines = []
+    for parameter in init.parameters:
+        lines.append(parameter.name)
+        if parameter.docstring is not None:
+            text = " ".join(parameter.docstring.value.split())
+            if text:
+                lines.append("    " + text)
+    init.docstring = Docstring(
+        "Parameters\n----------\n" + "\n".join(lines),
+        parent=init,
+        parser=Parser.numpy,
     )
     init.labels.add("generated")
     class_.set_member("__init__", init)

@@ -23,7 +23,9 @@ pytest.importorskip("bagof.magic")
 _counter = itertools.count()
 
 
-def load(source: str) -> griffe.Module:
+def load(
+    source: str, parser: griffe.Parser | None = None,
+) -> griffe.Module:
     """Load a one-module package built from ``source``.
 
     Each call gets a fresh module name, so the live path imports the
@@ -37,6 +39,7 @@ def load(source: str) -> griffe.Module:
     search = [str(tmp)] + [p for p in sys.path if isinstance(p, str) and p]
     return griffe.load(
         name,
+        docstring_parser=parser,
         search_paths=search,
         extensions=griffe.load_extensions(MagicExtension()),
     )
@@ -399,3 +402,55 @@ def test_static_annotated_marker(static: None) -> None:
     y = next(p for p in mod["P"]["__init__"].parameters if p.name == "y")
     assert str(y.annotation) == "int"
     assert y.kind.value == "keyword-only"
+
+
+@pytest.mark.parametrize("parser", [None, *griffe.Parser])
+@pytest.mark.parametrize("fallback", [False, True])
+def test_public_parameter_names_and_parsed_table(
+    monkeypatch: pytest.MonkeyPatch, fallback: bool,
+    parser: griffe.Parser | None,
+) -> None:
+    if fallback:
+        monkeypatch.setattr(_bagof, "AVAILABLE", False)
+    mod = load(
+        "from bagof.magic import Magic\n"
+        "class C(Magic):\n"
+        "    _header: str = 'hello'\n"
+        '    """Header text."""\n'
+        "    count: int = 2\n",
+        parser=parser,
+    )
+    cls = mod["C"]
+    assert names(cls) == ["header", "count"]
+    init = cls["__init__"]
+    assert init.docstring.parent is init
+    sections = init.docstring.parsed
+    section = next(s for s in sections if s.kind.value == "parameters")
+    assert [p.name for p in section.value] == ["header", "count"]
+    assert section.value[0].description == "Header text."
+    assert [str(p.annotation) for p in section.value] == ["str", "int"]
+    assert [str(p.value) for p in section.value] == ["'hello'", "2"]
+
+
+def test_preferred_alias_has_type_and_documentation() -> None:
+    mod = load(
+        "from typing import Annotated\n"
+        "from bagof.magic import Magic, Field\n"
+        "class C(Magic):\n"
+        "    _header: Annotated[str, Field(\n"
+        "        alias=('header', 'heading'), doc='Header text.')]\n"
+    )
+    init = mod["C"]["__init__"]
+    assert names(mod["C"]) == ["header"]
+    assert all(str(p.annotation) == "str" for p in init.parameters)
+    section = next(s for s in init.docstring.parsed
+                   if s.kind.value == "parameters")
+    assert all(p.description == "Header text." for p in section.value)
+
+
+def test_static_alias_false_preserves_underscores(static: None) -> None:
+    mod = load(
+        "from bagof.magic import Magic\n"
+        "class C(Magic, alias=False):\n    _header: str\n"
+    )
+    assert names(mod["C"]) == ["_header"]
