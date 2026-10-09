@@ -85,7 +85,11 @@ def _add_methods(
     globalns: dict,
     localns: dict,
 ) -> None:
-    by_param = {field.public_name: field for field in fields.values()}
+    by_param = {
+        name: field
+        for field in fields.values()
+        for name in getattr(field, "aliases", (field.public_name,))
+    }
     for name, option in generated_names(live).items():
         method = getattr(live, name, None)
         if not inspect.isroutine(method):
@@ -154,9 +158,9 @@ def _make_init(
         "__init__",
         parameters=griffe.Parameters(*parameters),
         returns="None",
-        docstring=_init_docstring(cls, signature, by_param),
         parent=cls,
     )
+    function.docstring = _init_docstring(function, signature, by_param)
     function.labels.add("generated")
     return function
 
@@ -168,7 +172,7 @@ def _default_of(parameter: inspect.Parameter) -> str | None:
 
 
 def _init_docstring(
-    cls: griffe.Class,
+    cls: griffe.Function,
     signature: inspect.Signature,
     by_param: dict[str, Any],
 ) -> griffe.Docstring | None:
@@ -183,14 +187,22 @@ def _init_docstring(
         if index == 0:
             continue
         field = by_param.get(parameter.name)
-        text = " ".join((getattr(field, "doc", "") or "").split())
+        doc = getattr(field, "doc", "") or ""
+        if not doc and field is not None and cls.parent is not None:
+            member = cls.parent.members.get(field.name)
+            if member is not None and member.docstring is not None:
+                doc = member.docstring.value
+        text = " ".join(doc.split())
+        lines.append(parameter.name)
         if text:
-            lines.append(parameter.name)
             lines.append("    " + text)
     if not lines:
         return None
     body = "Parameters\n----------\n" + "\n".join(lines)
-    return _docstring(body, cls)
+    # This generated section has a known syntax, independent of the
+    # parser selected for hand-written documentation. Its parent must
+    # be the function so griffe can infer types and defaults.
+    return griffe.Docstring(body, parent=cls, parser=griffe.Parser.numpy)
 
 
 def _make_stub(
