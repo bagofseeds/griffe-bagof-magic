@@ -68,6 +68,12 @@ def _rewrite_attributes(cls: griffe.Class, fields: dict[str, Any]) -> None:
             # as an attribute -- so it has no attribute to document.
             cls.del_member(field.name)
             continue
+        if field.var:
+            member.labels.discard("instance-attribute")
+            member.labels.add("class-attribute")
+        else:
+            member.labels.discard("class-attribute")
+            member.labels.add("instance-attribute")
         member.annotation = _render.expression(
             _render.declared_type(field), cls
         )

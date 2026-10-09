@@ -40,13 +40,16 @@ _KW_ONLY = {"bagof.magic.KwOnly"}
 _NOT_KW_ONLY = {"bagof.magic.NotKwOnly", "bagof.magic.Positional"}
 # Only a class variable is not a constructor parameter. An init-only
 # ``Var`` (the analogue of `dataclasses.InitVar`) *is* one.
-_CLASS_VAR = {"bagof.magic.ClassVar"}
+_CLASS_VAR = {
+    "bagof.magic.ClassVar", "typing.ClassVar", "typing_extensions.ClassVar",
+}
+_VAR = {"bagof.magic.Var", "bagof.magic.InitVar"}
 _DEFAULT = {"bagof.magic.Default"}
 _FACTORY = {"bagof.magic.Factory"}
 
 _ALL_MARKERS = (
     _NO_INIT | _INIT | _KW_ONLY | _NOT_KW_ONLY | _CLASS_VAR
-    | _DEFAULT | _FACTORY
+    | _VAR | _DEFAULT | _FACTORY
 )
 _ANNOTATED = {"typing.Annotated", "typing_extensions.Annotated"}
 
@@ -102,15 +105,18 @@ def _options(class_: Class) -> dict:
 
 
 class _Field:
-    __slots__ = ("inner", "include", "kind", "default")
+    __slots__ = ("inner", "include", "kind", "default", "var")
 
     def __init__(self, inner: Any) -> None:
         self.inner = inner
         self.include = True
+        self.var = False
         self.kind: ParameterKind | None = None
         self.default: Any = None
 
     def apply(self, marker: str, extras: list) -> None:
+        if marker in _CLASS_VAR or marker in _VAR:
+            self.var = True
         if marker in _CLASS_VAR or marker in _NO_INIT:
             self.include = False
         elif marker in _INIT:
@@ -135,19 +141,23 @@ def _analyse(attribute: Attribute) -> _Field:
     field = _Field(annotation)
     field.default = attribute.value
 
-    if isinstance(annotation, ExprSubscript):
-        path = getattr(annotation.left, "canonical_path", None)
-        slice_ = annotation.slice
+    def analyse(hint: Any) -> None:
+        if not isinstance(hint, ExprSubscript):
+            return
+        path = getattr(hint.left, "canonical_path", None)
+        slice_ = hint.slice
         elements = (
             list(slice_.elements)
             if isinstance(slice_, ExprTuple)
             else [slice_]
         )
         if path in _ALL_MARKERS:
-            field.inner = elements[0] if elements else annotation
+            field.inner = elements[0] if elements else hint
+            analyse(field.inner)
             field.apply(path, elements[1:])
         elif path in _ANNOTATED and elements:
             field.inner = elements[0]
+            analyse(field.inner)
             for meta in elements[1:]:
                 if isinstance(meta, ExprCall):
                     meta_path = getattr(meta.function, "canonical_path", None)
@@ -156,16 +166,44 @@ def _analyse(attribute: Attribute) -> _Field:
                             a for a in meta.arguments if not hasattr(a, "name")
                         ]
                         field.apply(meta_path, args)
+                    elif meta_path == "bagof.magic.Field":
+                        for argument in meta.arguments:
+                            name = getattr(argument, "name", None)
+                            value = _literal(getattr(argument, "value", None))
+                            if name == "var" and isinstance(value, bool):
+                                field.var = value
+                            if name == "init" and isinstance(value, bool):
+                                field.include = value
+                            elif name == "kw_only" and isinstance(value, bool):
+                                field.kind = (
+                                    ParameterKind.keyword_only if value
+                                    else ParameterKind.positional_or_keyword
+                                )
+
+    analyse(annotation)
 
     if field.include and _is_class_variable(attribute):
         field.include = False
+    if field.var and not field.include:
+        attribute.labels.discard("instance-attribute")
+        attribute.labels.add("class-attribute")
     return field
 
 
-def _parameters(class_: Class, kw_only_default: bool) -> list[Parameter]:
+def _parameters(
+    class_: Class, kw_only_default: bool,
+    members: dict[str, tuple[Attribute, bool, bool]] | None = None,
+) -> list[Parameter]:
     parameters = []
-    for member in class_.members.values():
-        if not member.is_attribute:
+    if members is None:
+        members = {
+            member.name: (member, kw_only_default,
+                          _options(class_).get("alias") is False)
+            for member in class_.members.values()
+            if isinstance(member, Attribute)
+        }
+    for member, kw_only_default, private in members.values():
+        if not isinstance(member, Attribute):
             continue
         if member.annotation is None or "property" in member.labels:
             continue
@@ -180,7 +218,7 @@ def _parameters(class_: Class, kw_only_default: bool) -> list[Parameter]:
             kind = ParameterKind.positional_or_keyword
         parameters.append(
             Parameter(
-                (member.name if _options(class_).get("alias") is False
+                (member.name if private
                  else member.name.lstrip("_")),
                 annotation=field.inner,
                 kind=kind,
@@ -212,11 +250,20 @@ def document(class_: Class) -> bool:
         mro = list(class_.mro())
     except ValueError:
         mro = []
-    for parent in reversed(mro):
-        if _directly_magic(parent):
-            parent_kw = _options(parent).get("kw_only", False)
-            parameters.extend(_parameters(parent, parent_kw))
-    parameters.extend(_parameters(class_, options.get("kw_only", False)))
+    # Merge by stored field name before filtering. A subclass can replace
+    # an inherited constructor field with a ClassVar or NoInit field.
+    members: dict[str, tuple[Attribute, bool, bool]] = {}
+    for owner in [*reversed(mro), class_]:
+        if owner is not class_ and not looks_magic(owner):
+            continue
+        owner_options = _options(owner)
+        for member in owner.members.values():
+            if isinstance(member, Attribute) and member.annotation is not None:
+                members[member.name] = (
+                    member, owner_options.get("kw_only", False),
+                    owner_options.get("alias") is False,
+                )
+    parameters = _parameters(class_, False, members)
 
     if not parameters:
         return False

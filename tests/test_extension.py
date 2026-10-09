@@ -454,3 +454,45 @@ def test_static_alias_false_preserves_underscores(static: None) -> None:
         "class C(Magic, alias=False):\n    _header: str\n"
     )
     assert names(mod["C"]) == ["_header"]
+
+
+@pytest.mark.parametrize("hint", [
+    "ClassVar[str]",
+    "Annotated[ClassVar[str], 'metadata']",
+    "Annotated[str, MagicClassVar()]",
+    "Annotated[str, Field(init=False)]",
+    "Annotated[str, Field(var=True, init=False)]",
+])
+@pytest.mark.parametrize("fallback", [False, True])
+def test_excluded_fields_match_runtime(
+    monkeypatch: pytest.MonkeyPatch, hint: str, fallback: bool,
+) -> None:
+    if fallback:
+        monkeypatch.setattr(_bagof, "AVAILABLE", False)
+    mod = load(
+        "from typing import Annotated, ClassVar\n"
+        "from bagof.magic import Magic, Field, ClassVar as MagicClassVar\n"
+        "class C(Magic):\n"
+        f"    kind: {hint} = 'thing'\n"
+        "    x: int\n"
+    )
+    assert names(mod["C"]) == ["x"]
+    if "ClassVar" in hint or "var=True" in hint:
+        assert "instance-attribute" not in mod["C"]["kind"].labels
+        assert "class-attribute" in mod["C"]["kind"].labels
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+def test_subclass_classvar_removes_inherited_parameter(
+    monkeypatch: pytest.MonkeyPatch, fallback: bool,
+) -> None:
+    if fallback:
+        monkeypatch.setattr(_bagof, "AVAILABLE", False)
+    mod = load(
+        "from typing import ClassVar\n"
+        "from bagof.magic import Magic\n"
+        "class Base(Magic):\n    kind: str\n    x: int\n"
+        "class Middle(Base):\n    y: int\n"
+        "class Child(Middle):\n    kind: ClassVar[str] = 'thing'\n"
+    )
+    assert names(mod["Child"]) == ["x", "y"]
