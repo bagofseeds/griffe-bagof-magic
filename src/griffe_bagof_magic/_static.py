@@ -15,8 +15,10 @@ from __future__ import annotations
 from typing import Any
 
 from griffe import (
+    AliasResolutionError,
     Attribute,
     Class,
+    CyclicAliasError,
     Docstring,
     ExprCall,
     ExprSubscript,
@@ -26,6 +28,7 @@ from griffe import (
     ParameterKind,
     Parameters,
     Parser,
+    TypeAlias,
 )
 
 _MAGIC_BASE = "bagof.magic.Magic"
@@ -141,7 +144,22 @@ def _analyse(attribute: Attribute) -> _Field:
     field = _Field(annotation)
     field.default = attribute.value
 
+    seen: set[str] = set()
+
     def analyse(hint: Any) -> None:
+        # Follow source aliases through griffe's collection. This works
+        # without importing or evaluating the documented package.
+        path = getattr(hint, "canonical_path", None)
+        if path and path not in seen:
+            seen.add(path)
+            try:
+                target = attribute.modules_collection.get_member(path)
+                if isinstance(target, (Attribute, TypeAlias)):
+                    value = target.value
+                    if value is not None and not isinstance(value, str):
+                        analyse(value)
+            except (KeyError, AliasResolutionError, CyclicAliasError):
+                pass
         if not isinstance(hint, ExprSubscript):
             return
         path = getattr(hint.left, "canonical_path", None)
