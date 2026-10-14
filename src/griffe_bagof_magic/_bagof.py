@@ -74,8 +74,8 @@ def magic_fields(live: type) -> dict[str, Any]:
     """Every field of a live magic class, keyed by name.
 
     Unlike the public ``fields()``, this keeps the pseudo-fields
-    (``ClassVar`` and init-only ``Var``) -- the field table documents
-    them, and an init-only ``Var`` is a genuine constructor parameter.
+    (``ClassVar`` and init-only ``Var``) -- they affect attribute labels,
+    and an init-only ``Var`` is a genuine constructor parameter.
     """
     return dict(getattr(live, _FIELDS, None) or {})
 

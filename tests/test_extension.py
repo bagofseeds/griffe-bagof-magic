@@ -279,25 +279,18 @@ def test_alias_names_the_parameter_and_the_attribute() -> None:
 # ----------------------------------------------------------------------
 
 
-def test_field_table_is_appended() -> None:
+@pytest.mark.parametrize("fallback", [False, True])
+def test_no_fields_section(
+    monkeypatch: pytest.MonkeyPatch, fallback: bool,
+) -> None:
+    if fallback:
+        monkeypatch.setattr(_bagof, "AVAILABLE", False)
     mod = load(
         "from bagof.magic import Magic\n"
         'class C(Magic):\n    """A thing."""\n    x: int\n    y: int = 0\n'
     )
-    doc = mod["C"].docstring.value
-    assert "A thing." in doc
-    assert "| Field | Type | Default |" in doc
-    assert "| `x` | `int` | *required* |" in doc
-    assert "| `y` | `int` | `0` |" in doc
-
-
-def test_field_table_escapes_a_union_pipe() -> None:
-    mod = load(
-        "import typing_extensions as tx\n"
-        "from bagof.magic import Magic\n"
-        'class C(Magic):\n    """T."""\n    note: tx.Optional[str] = None\n'
-    )
-    assert r"`str \| None`" in mod["C"].docstring.value
+    assert mod["C"].docstring.value == "A thing."
+    assert names(mod["C"]) == ["x", "y"]
 
 
 def test_generated_methods_are_labelled() -> None:
@@ -551,3 +544,77 @@ def test_static_imported_classvar_alias(
     )
     assert names(mod["C"]) == ["x"]
     assert "instance-attribute" not in mod["C"]["data_fields"].labels
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+@pytest.mark.parametrize("parser, body", [
+    (griffe.Parser.numpy,
+     "Parameters\n----------\nx : int\n    Manual description."),
+    (griffe.Parser.google, "Args:\n    x (int): Manual description."),
+    (griffe.Parser.sphinx, ":param x: Manual description.\n:type x: int"),
+    (None, "Parameters\n----------\nx : int\n    Manual description."),
+])
+def test_manual_class_parameters_are_preserved(
+    monkeypatch: pytest.MonkeyPatch, fallback: bool,
+    parser: griffe.Parser | None, body: str,
+) -> None:
+    if fallback:
+        monkeypatch.setattr(_bagof, "AVAILABLE", False)
+    mod = load(
+        "from bagof.magic import Magic\n"
+        "class C(Magic):\n"
+        '    """\n'
+        + "\n".join("    " + line for line in body.splitlines())
+        + '\n    """\n'
+        "    x: int\n",
+        parser=parser,
+    )
+    cls = mod["C"]
+    assert cls.docstring.value == body
+    assert cls["__init__"].docstring is None
+    assert names(cls) == ["x"]
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+def test_manual_init_parameters_are_preserved(
+    monkeypatch: pytest.MonkeyPatch, fallback: bool,
+) -> None:
+    if fallback:
+        monkeypatch.setattr(_bagof, "AVAILABLE", False)
+    body = "Parameters\n----------\nx : int\n    Manual description."
+    mod = load(
+        "from bagof.magic import Magic\n"
+        "class C(Magic):\n"
+        "    x: int\n"
+        "    def __init__(self, x):\n"
+        f"        {body!r}\n"
+        "        self.x = x\n",
+        parser=griffe.Parser.numpy,
+    )
+    assert mod["C"]["__init__"].docstring.value == body
+    assert "generated" not in mod["C"]["__init__"].labels
+
+
+@pytest.mark.parametrize("hint", [
+    "Literal['a', 'b']",
+    "Optional[Literal['a', 'b']]",
+    "list[Literal['a', 'b']]",
+])
+def test_literal_like_stays_literal(hint: str) -> None:
+    from typing import Literal, Optional
+
+    from bagof.converters import Converter
+
+    declared = eval(hint, {"Literal": Literal, "Optional": Optional})
+    like = Converter.get(declared).like()
+    assert "str" not in str(like) and "bytes" not in str(like)
+    mod = load(
+        "from typing import Literal, Optional\n"
+        "from bagof.magic import Magic\n"
+        "class C(Magic, convert=True):\n"
+        f"    value: {hint}\n"
+    )
+    annotation = params(mod["C"])[0][1]
+    assert "Literal['a', 'b']" in annotation
+    assert "str" not in annotation
+    assert "bytes" not in annotation
