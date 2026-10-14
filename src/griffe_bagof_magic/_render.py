@@ -143,3 +143,19 @@ def notes(field: Any) -> str:
     if field.validate:
         out.append("validated")
     return ", ".join(out)
+
+
+def has_parameters(docstring: griffe.Docstring | None) -> bool:
+    """Whether hand-written documentation already describes parameters.
+
+    Honour the configured parser. Without one, recognise the standard
+    docstring formats without changing the original docstring.
+    """
+    if docstring is None:
+        return False
+    parsers = [docstring.parser] if docstring.parser else list(griffe.Parser)
+    return any(
+        section.kind is griffe.DocstringSectionKind.parameters
+        for parser in parsers
+        for section in docstring.parse(parser=parser)
+    )

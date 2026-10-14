@@ -31,6 +31,8 @@ from griffe import (
     TypeAlias,
 )
 
+from . import _render
+
 _MAGIC_BASE = "bagof.magic.Magic"
 _MAGIC_DECORATOR = "bagof.magic.magic"
 
@@ -304,11 +306,12 @@ def document(class_: Class) -> bool:
             text = " ".join(parameter.docstring.value.split())
             if text:
                 lines.append("    " + text)
-    init.docstring = Docstring(
-        "Parameters\n----------\n" + "\n".join(lines),
-        parent=init,
-        parser=Parser.numpy,
-    )
+    if not _render.has_parameters(class_.docstring):
+        init.docstring = Docstring(
+            "Parameters\n----------\n" + "\n".join(lines),
+            parent=init,
+            parser=Parser.numpy,
+        )
     init.labels.add("generated")
     class_.set_member("__init__", init)
     return True

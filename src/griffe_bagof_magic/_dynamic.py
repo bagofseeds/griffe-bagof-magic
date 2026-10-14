@@ -16,9 +16,7 @@ import griffe
 
 from . import _render
 from ._bagof import (
-    MISSING,
     generated_names,
-    has_factory,
     like_of,
     magic_fields,
 )
@@ -28,7 +26,7 @@ def document(cls: griffe.Class, live: type, loader: Any) -> bool:
     """Fill in what a magic class writes for itself. ``True`` if it did.
 
     A magic class with no fields has nothing to add -- its constructor
-    takes nothing and its table would be empty -- so it is left alone and
+    takes nothing -- so it is left alone and
     this returns ``False``.
     """
     fields = magic_fields(live)
@@ -37,7 +35,6 @@ def document(cls: griffe.Class, live: type, loader: Any) -> bool:
     globalns, localns = _scopes(live)
     _rewrite_attributes(cls, fields)
     _add_methods(cls, live, fields, globalns, localns)
-    _add_field_table(cls, fields)
     return True
 
 
@@ -166,7 +163,8 @@ def _make_init(
         returns="None",
         parent=cls,
     )
-    function.docstring = _init_docstring(function, signature, by_param)
+    if not _render.has_parameters(cls.docstring):
+        function.docstring = _init_docstring(function, signature, by_param)
     function.labels.add("generated")
     return function
 
@@ -245,64 +243,6 @@ def _plain_parameters(method: object) -> griffe.Parameters:
             )
         )
     return griffe.Parameters(*parameters)
-
-
-# ----------------------------------------------------------------------
-# The field table
-# ----------------------------------------------------------------------
-
-
-def _default_cell(field: Any) -> str:
-    if field.build:
-        return f"`{has_factory(field)!r}`"
-    if field.default is MISSING:
-        return "*required*"
-    return f"`{_render.default_repr(field.default)}`"
-
-
-def _description_cell(field: Any) -> str:
-    # A field that is a constructor parameter is documented in the
-    # parameter table instead, so only a non-parameter counts here.
-    if field.init:
-        return ""
-    return " ".join((getattr(field, "doc", "") or "").split())
-
-
-def _escape(text: str) -> str:
-    # A `|` (from an optional/union type) would split the markdown cell.
-    return text.replace("|", "\\|")
-
-
-def _field_table(fields: dict[str, Any]) -> str:
-    columns = [
-        ("Field", lambda f: f"`{f.public_name}`"),
-        ("Type", lambda f: _escape(f"`{_render.declared_type(f)}`")),
-        ("Default", lambda f: _escape(_default_cell(f))),
-        ("Notes", _render.notes),
-        ("Description", _description_cell),
-    ]
-    # The last two columns are drawn only when some field has something
-    # to put in them.
-    columns = [
-        (title, cell)
-        for title, cell in columns
-        if title in ("Field", "Type", "Default")
-        or any(cell(field) for field in fields.values())
-    ]
-    rows = [[title for title, _ in columns], ["---"] * len(columns)]
-    rows += [
-        [cell(field) for _, cell in columns] for field in fields.values()
-    ]
-    lines = ["| " + " | ".join(row) + " |" for row in rows]
-    return "**Fields**\n\n" + "\n".join(lines)
-
-
-def _add_field_table(cls: griffe.Class, fields: dict[str, Any]) -> None:
-    table = _field_table(fields)
-    if cls.docstring is None:
-        cls.docstring = _docstring(table, cls)
-    elif "**Fields**" not in cls.docstring.value:
-        cls.docstring.value = cls.docstring.value.rstrip() + "\n\n" + table
 
 
 # ----------------------------------------------------------------------

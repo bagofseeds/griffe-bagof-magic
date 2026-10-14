@@ -16,7 +16,7 @@ class MagicExtension(griffe.Extension):
     For each magic class -- defined by inheritance (``class C(Magic)``) or
     by the ``@magic`` decorator -- it reconstructs the generated
     constructor, types the parameters by what they accept and the
-    attributes by what they hold, lists the fields, and labels the other
+    attributes by what they hold, and labels the other
     generated methods. When the documented package can be imported it
     reads the live class (exact); otherwise it falls back to the source.
     """
@@ -30,7 +30,7 @@ class MagicExtension(griffe.Extension):
     ) -> None:
         if "magic" in cls.labels:
             # Already documented: on_class can fire more than once, and a
-            # second field table (or a re-read constructor) is wrong.
+            # re-read constructor is wrong.
             return
 
         live = _live_object(cls, loader) if _bagof.AVAILABLE else None

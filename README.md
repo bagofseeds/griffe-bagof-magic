@@ -37,8 +37,8 @@ matches what the class actually does:
   hint, unioned with the declared type); the attribute shows the declared
   type it ends up holding.
 - **Defaults**, including `<factory>` for a field whose default is built.
-- **A field table** -- name, type, default, and whether each field is
-  keyword-only, frozen, converted or validated.
+- **Parameter documentation** from fields, unless a parameter section is
+  already written in the class or constructor docstring.
 - **The generated methods** (`__eq__`, `__repr__`, the ordering dunders, the
   dict-like interface, ...) each labelled `generated`, so a page can show or
   hide them as a group.
